@@ -1,10 +1,15 @@
 #include "MultiHook.h"
 
+#include <unordered_map>
+#include <mutex>
+
 #include "CodeCave.h"
 
-MultiHook::VMTHook::VMTHook(PVOID pObject, UINT uFuncCount) 
+MultiHook::Hook::Hook() {}
+
+MultiHook::VMTHook::VMTHook(PVOID pObject, UINT uFuncCount)
 	: Hook(), pObject(static_cast<PVOID**>(pObject)),
-	  uFuncCount(uFuncCount + 1), pVMTOriginal(*this->pObject), 
+	  uFuncCount(uFuncCount + 1), pVMTOriginal(*this->pObject),
 	  pVMTNew(std::make_unique<PVOID[]>(this->uFuncCount)) {
 	std::copy_n(pVMTOriginal - 1, uFuncCount, pVMTNew.get());
 }
@@ -29,11 +34,13 @@ BOOL MultiHook::VMTHook::PerformUnhook(UINT uIndex) {
 	return TRUE;
 }
 
-MultiHook::Hook::Hook() {}
+static std::mutex mutexGlobalState;
+static std::unordered_map<PVOID, PVOID> mapActiveHooks;
+static PVOID pVEH = NULL;
 
 LONG WINAPI MultiHook::VEHHook::ExceptionHandler(PEXCEPTION_POINTERS pExceptionPointers) {
 	if (pExceptionPointers->ExceptionRecord->ExceptionCode == STATUS_GUARD_PAGE_VIOLATION) {
-		std::lock_guard<std::mutex> lock(VEHHook::mutexGlobalState);
+		std::lock_guard<std::mutex> lock(mutexGlobalState);
 		for (auto& iterator : mapActiveHooks) {
 #ifdef _WIN64
 			if ((ULONG_PTR) iterator.first == pExceptionPointers->ContextRecord->Rip) {
@@ -56,7 +63,7 @@ LONG WINAPI MultiHook::VEHHook::ExceptionHandler(PEXCEPTION_POINTERS pExceptionP
 	return EXCEPTION_CONTINUE_SEARCH;
 }
 
-MultiHook::VEHHook::VEHHook(PVOID pOriginal, PVOID pHooked) 
+MultiHook::VEHHook::VEHHook(PVOID pOriginal, PVOID pHooked)
 	: pOriginal(pOriginal), pHooked(pHooked), dwOldProtection(0) {}
 
 BOOL MultiHook::VEHHook::Enable() {
@@ -71,7 +78,7 @@ BOOL MultiHook::VEHHook::Enable() {
 		// both functions are in the same memory page; PAGE_GUARD exceptions would recurse forever
 		return FALSE;
 	}
-	std::lock_guard<std::mutex> lock(VEHHook::mutexGlobalState);
+	std::lock_guard<std::mutex> lock(mutexGlobalState);
 	if (!pVEH) {
 		pVEH = AddVectoredExceptionHandler(TRUE, (PVECTORED_EXCEPTION_HANDLER) ExceptionHandler);
 		if (!pVEH) {
@@ -82,7 +89,7 @@ BOOL MultiHook::VEHHook::Enable() {
 }
 
 BOOL MultiHook::VEHHook::Disable() {
-	std::lock_guard<std::mutex> lock(VEHHook::mutexGlobalState);
+	std::lock_guard<std::mutex> lock(mutexGlobalState);
 	if (pVEH && mapActiveHooks.empty()) {
 		if (!RemoveVectoredExceptionHandler(pVEH)) {
 			return FALSE;
@@ -94,20 +101,20 @@ BOOL MultiHook::VEHHook::Disable() {
 }
 
 BOOL MultiHook::VEHHook::PerformHook() {
-	std::lock_guard<std::mutex> lock(VEHHook::mutexGlobalState);
+	std::lock_guard<std::mutex> lock(mutexGlobalState);
 	mapActiveHooks[pOriginal] = pHooked;
 	return pVEH && !!VirtualProtect(pOriginal, 0x01, PAGE_EXECUTE_READ | PAGE_GUARD, &dwOldProtection);
 }
 
 BOOL MultiHook::VEHHook::PerformUnhook() {
-	std::lock_guard<std::mutex> lock(VEHHook::mutexGlobalState);
+	std::lock_guard<std::mutex> lock(mutexGlobalState);
 	mapActiveHooks.erase(pOriginal);
 	DWORD dwOld;
 	return VirtualProtect(pOriginal, 0x01, dwOldProtection, &dwOld);
 }
 
 MultiHook::DetourHook::DetourHook(PVOID pOriginal, PVOID pHook, UINT uLen)
-	: pOriginal(pOriginal), pHooked(pHook), uLen(uLen), pRealFunction(pOriginal), 
+	: pOriginal(pOriginal), pHooked(pHook), uLen(uLen), pRealFunction(pOriginal),
 	  pBackupInst(new BYTE[uLen]) {}
 
 MultiHook::DetourHook::~DetourHook() {

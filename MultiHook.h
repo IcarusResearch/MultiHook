@@ -3,8 +3,6 @@
 #include <type_traits>
 #include <Windows.h>
 #include <memory>
-#include <unordered_map>
-#include <mutex>
 
 namespace MultiHook {
 
@@ -30,6 +28,7 @@ namespace MultiHook {
 
 	public:
 		VMTHook(PVOID pObject, UINT uFuncCount);
+		VMTHook() = delete;
 
 		BOOL Enable() override;
 		BOOL Disable() override;
@@ -50,9 +49,6 @@ namespace MultiHook {
 	class VEHHook : public Hook {
 	
 	private:
-		static std::unordered_map<PVOID, PVOID> mapActiveHooks;
-		static std::mutex mutexGlobalState;
-		static PVOID pVEH;
 		PVOID pOriginal;
 		PVOID pHooked;
 		DWORD dwOldProtection;
@@ -72,10 +68,6 @@ namespace MultiHook {
 		//template <typename T> T GetRealFunction();
 
 	};
-
-	std::unordered_map<PVOID, PVOID> VEHHook::mapActiveHooks;
-	std::mutex VEHHook::mutexGlobalState;
-	PVOID VEHHook::pVEH = NULL;
 
 	// hook by detouring the execution flow of the original function
 	class DetourHook : Hook {
